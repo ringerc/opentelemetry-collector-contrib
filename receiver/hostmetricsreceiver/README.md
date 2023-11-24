@@ -160,6 +160,7 @@ service:
 
 Host metrics are collected from the Linux system directories on the filesystem.
 You likely want to collect metrics about the host system and not the container.
+
 This is achievable by following these steps: 
 
 #### 1. Bind mount the host filesystem
@@ -169,6 +170,10 @@ the container. e.g. `docker run -v /:/hostfs ...`.
 
 You can also choose which parts of the host filesystem to mount, if you know 
 exactly what you'll need. e.g. `docker run -v /proc:/hostfs/proc`.
+
+It's generally safest to bind-mount only the minimum required parts of the host
+filesystem into the container, and to do so with read-only mounts. In Kubernetes, use
+`hostPath` volumes pointing to and use `volumeMounts` with `readOnly: true`.
 
 #### 2. Configure `root_path`
 
@@ -182,6 +187,52 @@ receivers:
   hostmetrics:
     root_path: /hostfs
 ```
+
+Several hostmetrics scrapers require access to the host node's procfs to report effectively.
+
+#### Limitations of running in a container
+
+##### Procfs access restrictions on process scraping
+
+Unless the collector is run in a privileged container (with `CAP_SYS_PTRACE` or `CAP_SYS_ADMIN`)
+it will be unable to read process attributes for some processes due to operating system restrictions. 
+Container runtimes may also apply their own procfs masking and protection. Restrictions may also be
+applied by seccomp profiles, apparmor profiles, SELinux, etc.
+
+So the 
+
+The [`process` collector should have its error mute options turned on](#process) to silence the resulting
+error logs like:
+
+```
+error reading process executable for pid 1: readlink /host/proc/1/exe: permission denied
+error reading username for process \"systemd\" (pid 1): open /etc/passwd: no such file or directory
+```
+
+##### Process uid to user mapping unreliable
+
+Even if the host `/etc/passwd` is bind-mounted into the container, the collector will not be able to
+find information about users running inside containers. It may mis-identify usernames because the
+uid to username mapping inside containers may not match that of the host. Or it may fail to find a uid
+to username mapping where none exists in the host passwd file.
+
+The process collector should have `mute_process_user_error` enabled, and a resource processor should
+be used to drop any username related attributes from metrics.
+
+##### Filesystem provider needs to see mountpoints
+
+The `filesystem` metrics provider needs to be able to "see" the mountpoints it discovers
+from procfs in the host filesystem tree. 
+
+If only `/proc` is mounted into the container at `/host/proc`, the scraper will fail to read filesystem
+paths and log errors like:
+
+```
+failed to read usage at /host/boot/efi: no such file or directory
+```
+
+TODO
+
 
 ## Resource attributes
 
